@@ -1,7 +1,11 @@
 import torch
 import torch.nn as nn
-from layers.Autoformer_EncDec import series_decomp
-from layers.Embed import DataEmbedding_wo_pos
+
+from layers.AutoCorrelation import AutoCorrelationLayer
+from layers.Autoformer_EncDec import series_decomp, Encoder, EncoderLayer, my_Layernorm, DecoderLayer
+from layers.Embed import DataEmbedding_wo_pos, DataEmbedding_inverted
+from layers.FourierCorrelation import FourierBlock
+from layers.SelfAttention_Family import ProbAttention, FullAttention, AttentionLayer
 from layers.StandardNorm import Normalize
 
 
@@ -138,6 +142,7 @@ class PastDecomposableMixing(nn.Module):
                 nn.GELU(),
                 nn.Linear(in_features=configs.d_ff, out_features=configs.d_model),
             )
+            # self.cross_layer = nn.MultiheadAttention(embed_dim=5, num_heads=5)
 
         # Mixing season
         self.mixing_multi_scale_season = MultiScaleSeasonMixing(configs)
@@ -162,9 +167,10 @@ class PastDecomposableMixing(nn.Module):
         trend_list = []
         for x in x_list:
             season, trend = self.decompsition(x)
-            if self.channel_independence == 0:
-                season = self.cross_layer(season)
-                trend = self.cross_layer(trend)
+            # 提前融合需删除
+            # if self.channel_independence == 0:
+            #     season = self.cross_layer(season)
+            #     trend = self.cross_layer(trend)
             season_list.append(season.permute(0, 2, 1))
             trend_list.append(trend.permute(0, 2, 1))
 
@@ -177,15 +183,17 @@ class PastDecomposableMixing(nn.Module):
         for ori, out_season, out_trend, length in zip(x_list, out_season_list, out_trend_list,
                                                       length_list):
             out = out_season + out_trend
-            if self.channel_independence:
-                out = ori + self.out_cross_layer(out)
+            # 提前融合需删除
+            # if self.channel_independence:
+            #     out = ori + self.out_cross_layer(out)
+            out = ori + out
             out_list.append(out[:, :length, :])
         return out_list
 
 
 class Model(nn.Module):
 
-    def __init__(self, configs):
+    def __init__(self, configs, version='fourier', mode_select='random', modes=32):
         super(Model, self).__init__()
         self.configs = configs
         self.task_name = configs.task_name
@@ -206,7 +214,79 @@ class Model(nn.Module):
         else:
             self.enc_embedding = DataEmbedding_wo_pos(configs.enc_in, configs.d_model, configs.embed, configs.freq,
                                                       configs.dropout)
+            # Embedding
+            self.data_embedding_inverted = DataEmbedding_inverted(configs.seq_len, configs.d_model, configs.embed, configs.freq,
+                                                                  configs.dropout)
+            # Encoder
+            self.encoder_inverted = Encoder(
+                [
+                    EncoderLayer(
+                        AttentionLayer(
+                            FullAttention(False, configs.factor, attention_dropout=configs.dropout,
+                                          output_attention=configs.output_attention), configs.d_model, configs.n_heads),
+                        configs.d_model,
+                        configs.d_ff,
+                        dropout=configs.dropout,
+                        activation=configs.activation
+                    ) for l in range(configs.e_layers)
+                ],
+                norm_layer=torch.nn.LayerNorm(configs.d_model)
+            )
 
+        self.version = version
+        self.mode_select = mode_select
+        self.modes = modes
+        encoder_fft_att = FourierBlock(in_channels=configs.d_model,
+                                       out_channels=configs.d_model,
+                                       seq_len=self.seq_len,
+                                       modes=self.modes,
+                                       mode_select_method=self.mode_select)
+        encoder_prob_att = ProbAttention(False, configs.factor, attention_dropout=configs.dropout,
+                                         output_attention=configs.output_attention)
+        # Encoder
+        self.FFT_attn = Encoder(
+            [
+                EncoderLayer(
+                    AutoCorrelationLayer(
+                        encoder_fft_att,  # instead of multi-head attention in transformer
+                        configs.d_model, configs.n_heads),
+                    configs.d_model,
+                    configs.d_ff,
+                    moving_avg=configs.moving_avg,
+                    dropout=configs.dropout,
+                    activation=configs.activation
+                ) for l in range(configs.e_layers)
+            ],
+            norm_layer=my_Layernorm(configs.d_model)
+        )
+        self.self_attn = Encoder(
+            [
+                EncoderLayer(
+                    AutoCorrelationLayer(
+                        encoder_prob_att,  # instead of multi-head attention in transformer
+                        configs.d_model, configs.n_heads),
+                    configs.d_model,
+                    configs.d_ff,
+                    moving_avg=configs.moving_avg,
+                    dropout=configs.dropout,
+                    activation=configs.activation
+                ) for l in range(configs.e_layers)
+            ],
+            norm_layer=my_Layernorm(configs.d_model)
+        )
+
+        self.cross_layer = DecoderLayer(
+            AutoCorrelationLayer(
+                encoder_fft_att,  # instead of multi-head attention in transformer
+                configs.d_model, configs.n_heads),
+            AutoCorrelationLayer(
+                encoder_prob_att,  # instead of multi-head attention in transformer
+                configs.d_model, configs.n_heads),
+            configs.d_model,
+            configs.d_ff,
+            dropout=configs.dropout,
+            activation=configs.activation,
+        )
         self.layer = configs.e_layers
         if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
             self.predict_layers = torch.nn.ModuleList(
@@ -256,6 +336,7 @@ class Model(nn.Module):
         out_res = out_res.permute(0, 2, 1)
         out_res = self.out_res_layers[i](out_res)
         out_res = self.regression_layers[i](out_res).permute(0, 2, 1)
+        # out_res = self.projection_layer(out_res)
         dec_out = dec_out + out_res
         return dec_out
 
@@ -282,7 +363,8 @@ class Model(nn.Module):
                                   kernel_size=3, padding=padding,
                                   stride=self.configs.down_sampling_window,
                                   padding_mode='circular',
-                                  bias=False)
+                                  bias=False,
+                                  device=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"))
         else:
             return x_enc, x_mark_enc
         # B,T,C -> B,C,T
@@ -312,6 +394,8 @@ class Model(nn.Module):
         return x_enc, x_mark_enc
 
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+        # x_enc = self.enc_embedding(x_enc, x_mark_enc)
+        # x_enc, attns = self.encoder(x_enc, attn_mask=None)
 
         x_enc, x_mark_enc = self.__multi_scale_process_inputs(x_enc, x_mark_enc)
 
@@ -321,6 +405,18 @@ class Model(nn.Module):
             for i, x, x_mark in zip(range(len(x_enc)), x_enc, x_mark_enc):
                 B, T, N = x.size()
                 x = self.normalize_layers[i](x, 'norm')
+                device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+                # 特征融合
+                attention = nn.MultiheadAttention(embed_dim=N, num_heads=5, batch_first=True)
+                dropout = nn.Dropout(0.1)
+                attention.to(device)
+
+                x = x + dropout(attention(x, x, x)[0])
+
+                # x_inverse = self.data_embedding_inverted(x)
+                # x_inverse, attns = self.encoder_inverted(x_inverse, attn_mask=None)
+                # x_inverse = self.fuse_layer(x_inverse.permute(0, 2, 1))
+                # enc_out += x_inverse.permute(0, 2, 1)
                 if self.channel_independence == 1:
                     x = x.permute(0, 2, 1).contiguous().reshape(B * N, T, 1)
                     x_mark = x_mark.repeat(N, 1, 1)
@@ -364,14 +460,25 @@ class Model(nn.Module):
             for i, enc_out in zip(range(len(x_list)), enc_out_list):
                 dec_out = self.predict_layers[i](enc_out.permute(0, 2, 1)).permute(
                     0, 2, 1)  # align temporal dimension
+
+                dec_out_fft, attns = self.FFT_attn(dec_out, attn_mask=None)
+                dec_out_prob, attns = self.self_attn(dec_out, attn_mask=None)
+                # dec_out = dec_out_fft + dec_out_prob
+                dec_out = self.cross_layer(dec_out_fft, dec_out_prob)
+
                 dec_out = self.projection_layer(dec_out)
                 dec_out = dec_out.reshape(B, self.configs.c_out, self.pred_len).permute(0, 2, 1).contiguous()
+
                 dec_out_list.append(dec_out)
 
         else:
             for i, enc_out, out_res in zip(range(len(x_list[0])), enc_out_list, x_list[1]):
                 dec_out = self.predict_layers[i](enc_out.permute(0, 2, 1)).permute(
                     0, 2, 1)  # align temporal dimension
+                dec_out_fft, attns = self.FFT_attn(dec_out, attn_mask=None)
+                dec_out_prob, attns = self.self_attn(dec_out, attn_mask=None)
+                dec_out = self.cross_layer(dec_out_fft, dec_out_prob)
+                # dec_out = dec_out_fft + dec_out_prob
                 dec_out = self.out_projection(dec_out, i, out_res)
                 dec_out_list.append(dec_out)
 

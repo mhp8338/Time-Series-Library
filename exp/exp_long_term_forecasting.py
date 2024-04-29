@@ -139,7 +139,15 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
                     loss = criterion(outputs, batch_y)
                     train_loss.append(loss.item())
-
+                # from torchinfo import summary
+                # summary(self.model,
+                #         input_size=(batch_x.shape, batch_x_mark.shape, dec_inp.shape, batch_y_mark.shape),
+                #         # make sure this is "input_size", not "input_shape" (batch_size, color_channels, height, width)
+                #         verbose=0,
+                #         col_names=["input_size", "output_size", "num_params", "trainable"],
+                #         col_width=16,
+                #         row_settings=["var_names"]
+                #         )
                 if (i + 1) % 100 == 0:
                     print("\titers: {0}, epoch: {1} | loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()))
                     speed = (time.time() - time_now) / iter_count

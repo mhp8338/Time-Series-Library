@@ -97,12 +97,12 @@ class EncoderLayer(nn.Module):
             x, x, x,
             attn_mask=attn_mask
         )
-        x = x + self.dropout(new_x)
-        x, _ = self.decomp1(x)
-        y = x
-        y = self.dropout(self.activation(self.conv1(y.transpose(-1, 1))))
-        y = self.dropout(self.conv2(y).transpose(-1, 1))
-        res, _ = self.decomp2(x + y)
+        res = x + self.dropout(new_x)
+        # x, _ = self.decomp1(x)
+        # y = x
+        # y = self.dropout(self.activation(self.conv1(y.transpose(-1, 1))))
+        # y = self.dropout(self.conv2(y).transpose(-1, 1))
+        # res, _ = self.decomp2(x + y)
         return res, attn
 
 
@@ -163,20 +163,20 @@ class DecoderLayer(nn.Module):
             x, x, x,
             attn_mask=x_mask
         )[0])
-        x, trend1 = self.decomp1(x)
+        # x, trend1 = self.decomp1(x)
         x = x + self.dropout(self.cross_attention(
             x, cross, cross,
             attn_mask=cross_mask
         )[0])
-        x, trend2 = self.decomp2(x)
-        y = x
-        y = self.dropout(self.activation(self.conv1(y.transpose(-1, 1))))
-        y = self.dropout(self.conv2(y).transpose(-1, 1))
-        x, trend3 = self.decomp3(x + y)
-
-        residual_trend = trend1 + trend2 + trend3
-        residual_trend = self.projection(residual_trend.permute(0, 2, 1)).transpose(1, 2)
-        return x, residual_trend
+        # x, trend2 = self.decomp2(x)
+        # y = x
+        # y = self.dropout(self.activation(self.conv1(y.transpose(-1, 1))))
+        # y = self.dropout(self.conv2(y).transpose(-1, 1))
+        # x, trend3 = self.decomp3(x + y)
+        #
+        # residual_trend = trend1 + trend2 + trend3
+        # residual_trend = self.projection(residual_trend.permute(0, 2, 1)).transpose(1, 2)
+        return x
 
 
 class Decoder(nn.Module):

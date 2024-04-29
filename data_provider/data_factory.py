@@ -1,5 +1,5 @@
 from data_provider.data_loader import Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom, Dataset_M4, PSMSegLoader, \
-    MSLSegLoader, SMAPSegLoader, SMDSegLoader, SWATSegLoader, UEAloader
+    MSLSegLoader, SMAPSegLoader, SMDSegLoader, SWATSegLoader, UEAloader, Dataset_SMS_hour, Dataset_SMS_minute
 from data_provider.uea import collate_fn
 from torch.utils.data import DataLoader
 
@@ -15,7 +15,11 @@ data_dict = {
     'SMAP': SMAPSegLoader,
     'SMD': SMDSegLoader,
     'SWAT': SWATSegLoader,
-    'UEA': UEAloader
+    'UEA': UEAloader,
+    'sms_hour_mean': Dataset_SMS_hour,
+    'sms_hour_max': Dataset_SMS_hour,
+    'sms_minute_max': Dataset_SMS_minute,
+    'sms_minute_mean': Dataset_SMS_minute,
 }
 
 

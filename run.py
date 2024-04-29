@@ -194,3 +194,5 @@ if __name__ == '__main__':
         print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
         exp.test(setting, test=1)
         torch.cuda.empty_cache()
+        print('>>>>>>>>>>>>>>>>>>>>>>>>>>>>>ending<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<')
+
